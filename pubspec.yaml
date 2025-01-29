@@ -39,6 +39,7 @@ dependencies:
   path: ^1.9.0
   device_info_plus: ^11.2.2
   docman: ^1.2.0
+  shared_preferences: ^2.4.0
 
 dev_dependencies:
   flutter_test:

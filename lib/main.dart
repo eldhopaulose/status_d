@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:docman/docman.dart';
-import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
@@ -31,18 +31,22 @@ class WhatsAppStatusScreen extends StatefulWidget {
 
 class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
     with SingleTickerProviderStateMixin {
+  // SharedPreferences keys
+  static const String KEY_STATUS_PATH = 'status_directory_path';
+  static const String KEY_DOWNLOAD_PATH = 'download_directory_path';
+
   List<DocumentFile> _statuses = [];
   bool _isLoading = false;
   String _statusMessage = '';
   late TabController _tabController;
   DocumentFile? _statusDir;
-  DocumentFile? downloadDir;
+  DocumentFile? _downloadDir;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-    _initializeStatusDirectory();
+    _loadSavedDirectories();
   }
 
   @override
@@ -51,12 +55,75 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
     super.dispose();
   }
 
+  Future<void> _loadSavedDirectories() async {
+    await _loadSavedStatusDirectory();
+    await _loadSavedDownloadDirectory();
+  }
+
+  Future<void> _loadSavedStatusDirectory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedPath = prefs.getString(KEY_STATUS_PATH);
+
+    if (savedPath != null) {
+      try {
+        final dir = await DocMan.pick.directory(
+          initDir: savedPath,
+        );
+
+        if (dir != null) {
+          setState(() {
+            _statusDir = dir;
+          });
+          _loadStatuses();
+          return;
+        }
+      } catch (e) {
+        print('Error loading saved status path: $e');
+      }
+    }
+
+    // If no saved path or error loading it, try default paths
+    _initializeStatusDirectory();
+  }
+
+  Future<void> _loadSavedDownloadDirectory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedPath = prefs.getString(KEY_DOWNLOAD_PATH);
+
+    if (savedPath != null) {
+      try {
+        final dir = await DocMan.pick.directory(
+          initDir: savedPath,
+        );
+
+        if (dir != null) {
+          setState(() {
+            _downloadDir = dir;
+          });
+          return;
+        }
+      } catch (e) {
+        print('Error loading saved download path: $e');
+      }
+    }
+
+    // If no saved path or error, try default download directory
+    _initializeDownloadDirectory();
+  }
+
+  Future<void> _saveStatusDirectoryPath(String path) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(KEY_STATUS_PATH, path);
+  }
+
+  Future<void> _saveDownloadDirectoryPath(String path) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(KEY_DOWNLOAD_PATH, path);
+  }
+
   Future<void> _initializeStatusDirectory() async {
-    // For newer Android versions (11+)
     const List<String> whatsappPaths = [
       'Android/media/com.whatsapp/WhatsApp/Media/.Statuses',
-      // 'WhatsApp/Media/.Statuses',
-      // 'Android/media/com.whatsapp/WhatsApp/Media/Statuses'
     ];
 
     for (final path in whatsappPaths) {
@@ -67,6 +134,9 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
         );
 
         if (dir != null) {
+          await _saveStatusDirectoryPath(
+              'content://com.android.externalstorage.documents/document/primary%3A$path');
+
           setState(() {
             _statusDir = dir;
           });
@@ -84,12 +154,62 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
     });
   }
 
-  Future<void> _selectDownloadDir() async {
-    // Get downloads directory
-    downloadDir = await DocMan.pick.directory(
-      initDir:
-          'content://com.android.externalstorage.documents/document/primary%3ADownload',
-    );
+  Future<void> _initializeDownloadDirectory() async {
+    try {
+      final dir = await DocMan.pick.directory(
+        initDir:
+            'content://com.android.externalstorage.documents/document/primary%3ADownload',
+      );
+
+      if (dir != null) {
+        await _saveDownloadDirectoryPath(
+            'content://com.android.externalstorage.documents/document/primary%3ADownload');
+
+        setState(() {
+          _downloadDir = dir;
+        });
+      }
+    } catch (e) {
+      print('Error accessing download directory: $e');
+      setState(() {
+        _statusMessage = 'Please select download folder manually';
+      });
+    }
+  }
+
+  Future<void> _selectStatusDirectory() async {
+    try {
+      final dir = await DocMan.pick.directory();
+      if (dir != null) {
+        await _saveStatusDirectoryPath(dir.uri.toString());
+
+        setState(() {
+          _statusDir = dir;
+        });
+        _loadStatuses();
+      }
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Error selecting status directory: $e';
+      });
+    }
+  }
+
+  Future<void> _selectDownloadDirectory() async {
+    try {
+      final dir = await DocMan.pick.directory();
+      if (dir != null) {
+        await _saveDownloadDirectoryPath(dir.uri.toString());
+
+        setState(() {
+          _downloadDir = dir;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Error selecting download directory: $e';
+      });
+    }
   }
 
   Future<void> _loadStatuses() async {
@@ -125,22 +245,23 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
   }
 
   Future<void> _downloadStatus(DocumentFile status) async {
+    if (_downloadDir == null) {
+      setState(() {
+        _statusMessage = 'Please select download directory first';
+      });
+      await _selectDownloadDirectory();
+      if (_downloadDir == null) return;
+    }
+
     setState(() {
       _isLoading = true;
       _statusMessage = 'Saving status...';
     });
 
     try {
-      if (downloadDir == null) {
-        setState(() {
-          _statusMessage = 'No save directory selected';
-        });
-        return;
-      }
-
       // Copy file to downloads
       final savedFile = await status.copyTo(
-        downloadDir!.uri,
+        _downloadDir!.uri,
         name:
             'WA_Status_${DateTime.now().millisecondsSinceEpoch}.${status.name.split('.').last}',
       );
@@ -188,12 +309,19 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _isLoading ? null : _loadStatuses,
+            icon: const Icon(Icons.folder_open),
+            onPressed: _isLoading ? null : _selectStatusDirectory,
+            tooltip: 'Select Status Folder',
           ),
           IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: _isLoading ? null : _selectDownloadDir,
+            icon: const Icon(Icons.download_for_offline),
+            onPressed: _isLoading ? null : _selectDownloadDirectory,
+            tooltip: 'Select Download Folder',
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _isLoading ? null : _loadStatuses,
+            tooltip: 'Refresh',
           ),
         ],
       ),
@@ -213,7 +341,7 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
           else if (_statusDir == null)
             Center(
               child: ElevatedButton.icon(
-                onPressed: _initializeStatusDirectory,
+                onPressed: _selectStatusDirectory,
                 icon: const Icon(Icons.folder_open),
                 label: const Text('Select Status Folder'),
               ),
