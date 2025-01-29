@@ -36,6 +36,7 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
   String _statusMessage = '';
   late TabController _tabController;
   DocumentFile? _statusDir;
+  DocumentFile? downloadDir;
 
   @override
   void initState() {
@@ -83,6 +84,14 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
     });
   }
 
+  Future<void> _selectDownloadDir() async {
+    // Get downloads directory
+    downloadDir = await DocMan.pick.directory(
+      initDir:
+          'content://com.android.externalstorage.documents/document/primary%3ADownload',
+    );
+  }
+
   Future<void> _loadStatuses() async {
     if (_statusDir == null) {
       _initializeStatusDirectory();
@@ -122,12 +131,6 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
     });
 
     try {
-      // Get downloads directory
-      final downloadDir = await DocMan.pick.directory(
-        initDir:
-            'content://com.android.externalstorage.documents/document/primary%3ADownload',
-      );
-
       if (downloadDir == null) {
         setState(() {
           _statusMessage = 'No save directory selected';
@@ -137,7 +140,7 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
 
       // Copy file to downloads
       final savedFile = await status.copyTo(
-        downloadDir.uri,
+        downloadDir!.uri,
         name:
             'WA_Status_${DateTime.now().millisecondsSinceEpoch}.${status.name.split('.').last}',
       );
@@ -188,6 +191,10 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
             icon: const Icon(Icons.refresh),
             onPressed: _isLoading ? null : _loadStatuses,
           ),
+          IconButton(
+            icon: const Icon(Icons.download),
+            onPressed: _isLoading ? null : _selectDownloadDir,
+          ),
         ],
       ),
       body: Column(
@@ -220,7 +227,7 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
                   _buildStatusGrid(
                     _statuses.where((file) {
                       try {
-                        return file.type?.startsWith('image/') ?? false;
+                        return file.type.startsWith('image/');
                       } catch (e) {
                         print('Error checking file type: $e');
                         return false;
@@ -231,7 +238,7 @@ class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
                   _buildStatusGrid(
                     _statuses.where((file) {
                       try {
-                        return file.type?.startsWith('video/') ?? false;
+                        return file.type.startsWith('video/');
                       } catch (e) {
                         print('Error checking file type: $e');
                         return false;
