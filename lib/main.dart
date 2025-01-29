@@ -1,445 +1,259 @@
+// lib/controllers/status_controller.dart
+import 'package:easy_folder_picker/FolderPicker.dart';
 import 'package:flutter/material.dart';
-import 'package:docman/docman.dart';
+import 'package:get/get.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+class StatusController extends GetxController {
+  RxList<FileSystemEntity> statusItems = <FileSystemEntity>[].obs;
+  RxBool isLoading = false.obs;
+  RxString currentSavePath = ''.obs;
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  // Storage key for SharedPreferences
+  static const String SAVE_PATH_KEY = 'status_save_path';
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'WhatsApp Status Downloader',
-      theme: ThemeData(
-        primarySwatch: Colors.green,
-        useMaterial3: true,
-      ),
-      home: const WhatsAppStatusScreen(),
-    );
-  }
-}
-
-class WhatsAppStatusScreen extends StatefulWidget {
-  const WhatsAppStatusScreen({super.key});
+  // WhatsApp status paths for different versions
+  final String waPath = "/storage/emulated/0/WhatsApp/Media/.Statuses";
+  final String waBusinessPath =
+      "/storage/emulated/0/WhatsApp Business/Media/.Statuses";
+  final String androidDataPath =
+      "/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/.Statuses";
 
   @override
-  State<WhatsAppStatusScreen> createState() => _WhatsAppStatusScreenState();
-}
-
-class _WhatsAppStatusScreenState extends State<WhatsAppStatusScreen>
-    with SingleTickerProviderStateMixin {
-  // SharedPreferences keys
-  static const String KEY_STATUS_PATH = 'status_directory_path';
-  static const String KEY_DOWNLOAD_PATH = 'download_directory_path';
-
-  List<DocumentFile> _statuses = [];
-  bool _isLoading = false;
-  String _statusMessage = '';
-  late TabController _tabController;
-  DocumentFile? _statusDir;
-  DocumentFile? _downloadDir;
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    _loadSavedDirectories();
+  void onInit() {
+    super.onInit();
+    loadSavedPath();
+    checkPermission();
   }
 
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadSavedDirectories() async {
-    await _loadSavedStatusDirectory();
-    await _loadSavedDownloadDirectory();
-  }
-
-  Future<void> _loadSavedStatusDirectory() async {
+  Future<void> loadSavedPath() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedPath = prefs.getString(KEY_STATUS_PATH);
-
-    if (savedPath != null) {
-      try {
-        final dir = await DocMan.pick.directory(
-          initDir: savedPath,
-        );
-
-        if (dir != null) {
-          setState(() {
-            _statusDir = dir;
-          });
-          _loadStatuses();
-          return;
-        }
-      } catch (e) {
-        print('Error loading saved status path: $e');
-      }
+    String? savedPath = prefs.getString(SAVE_PATH_KEY);
+    if (savedPath != null && savedPath.isNotEmpty) {
+      currentSavePath.value = savedPath;
+    } else {
+      await savePath('/storage/emulated/0/Ws Statuses');
     }
-
-    // If no saved path or error loading it, try default paths
-    _initializeStatusDirectory();
   }
 
-  Future<void> _loadSavedDownloadDirectory() async {
+  Future<void> savePath(String newPath) async {
     final prefs = await SharedPreferences.getInstance();
-    final savedPath = prefs.getString(KEY_DOWNLOAD_PATH);
-
-    if (savedPath != null) {
-      try {
-        final dir = await DocMan.pick.directory(
-          initDir: savedPath,
-        );
-
-        if (dir != null) {
-          setState(() {
-            _downloadDir = dir;
-          });
-          return;
-        }
-      } catch (e) {
-        print('Error loading saved download path: $e');
-      }
-    }
-
-    // If no saved path or error, try default download directory
-    _initializeDownloadDirectory();
+    await prefs.setString(SAVE_PATH_KEY, newPath);
+    currentSavePath.value = newPath;
   }
 
-  Future<void> _saveStatusDirectoryPath(String path) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(KEY_STATUS_PATH, path);
-  }
-
-  Future<void> _saveDownloadDirectoryPath(String path) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(KEY_DOWNLOAD_PATH, path);
-  }
-
-  Future<void> _initializeStatusDirectory() async {
-    const List<String> whatsappPaths = [
-      'Android/media/com.whatsapp/WhatsApp/Media/.Statuses',
-    ];
-
-    for (final path in whatsappPaths) {
-      try {
-        final dir = await DocMan.pick.directory(
-          initDir:
-              'content://com.android.externalstorage.documents/document/primary%3A$path',
-        );
-
-        if (dir != null) {
-          await _saveStatusDirectoryPath(
-              'content://com.android.externalstorage.documents/document/primary%3A$path');
-
-          setState(() {
-            _statusDir = dir;
-          });
-          _loadStatuses();
-          return;
-        }
-      } catch (e) {
-        print('Error accessing path $path: $e');
-        continue;
-      }
-    }
-
-    setState(() {
-      _statusMessage = 'Please select WhatsApp status folder manually';
-    });
-  }
-
-  Future<void> _initializeDownloadDirectory() async {
+  Future<void> pickSaveDirectory() async {
     try {
-      final dir = await DocMan.pick.directory(
-        initDir:
-            'content://com.android.externalstorage.documents/document/primary%3ADownload',
+      // Using easy_folder_picker to select directory
+      Directory directory = Directory(currentSavePath.value);
+      if (!await directory.exists()) {
+        directory = Directory(FolderPicker.rootPath);
+      }
+
+      Directory? newDirectory = await FolderPicker.pick(
+        allowFolderCreation: true,
+        context: Get.context!,
+        rootDirectory: directory,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(10))),
       );
 
-      if (dir != null) {
-        await _saveDownloadDirectoryPath(
-            'content://com.android.externalstorage.documents/document/primary%3ADownload');
-
-        setState(() {
-          _downloadDir = dir;
-        });
+      if (newDirectory != null) {
+        await savePath(newDirectory.path);
+        Get.snackbar('Success', 'Save location updated successfully');
       }
     } catch (e) {
-      print('Error accessing download directory: $e');
-      setState(() {
-        _statusMessage = 'Please select download folder manually';
-      });
+      Get.snackbar('Error', 'Failed to pick directory: $e');
     }
   }
 
-  Future<void> _selectStatusDirectory() async {
-    try {
-      final dir = await DocMan.pick.directory();
-      if (dir != null) {
-        await _saveStatusDirectoryPath(dir.uri.toString());
+  Future<void> checkPermission() async {
+    if (await _requestPermission(Permission.storage)) {
+      loadStatusItems();
+    } else {
+      Get.snackbar('Permission Denied',
+          'Please grant storage permission to access statuses');
+    }
 
-        setState(() {
-          _statusDir = dir;
-        });
-        _loadStatuses();
+    // For Android 11 and above
+    if (await _requestPermission(Permission.manageExternalStorage)) {
+      loadStatusItems();
+    }
+  }
+
+  Future<bool> _requestPermission(Permission permission) async {
+    if (await permission.isGranted) {
+      return true;
+    } else {
+      var result = await permission.request();
+      return result.isGranted;
+    }
+  }
+
+  Future<void> loadStatusItems() async {
+    isLoading.value = true;
+    statusItems.clear();
+
+    List<String> possiblePaths = [waPath, waBusinessPath, androidDataPath];
+
+    for (String statusPath in possiblePaths) {
+      final Directory directory = Directory(statusPath);
+      if (await directory.exists()) {
+        final List<FileSystemEntity> items = directory
+            .listSync()
+            .where((item) =>
+                item.path.endsWith('.jpg') ||
+                item.path.endsWith('.mp4') ||
+                item.path.endsWith('.jpeg'))
+            .toList();
+        statusItems.addAll(items);
       }
-    } catch (e) {
-      setState(() {
-        _statusMessage = 'Error selecting status directory: $e';
-      });
     }
+
+    isLoading.value = false;
   }
 
-  Future<void> _selectDownloadDirectory() async {
+  Future<bool> saveStatus(FileSystemEntity status) async {
     try {
-      final dir = await DocMan.pick.directory();
-      if (dir != null) {
-        await _saveDownloadDirectoryPath(dir.uri.toString());
+      final String fileName = path.basename(status.path);
+      final String savePath = currentSavePath.value;
 
-        setState(() {
-          _downloadDir = dir;
-        });
+      // Create save directory if it doesn't exist
+      final saveDir = Directory(savePath);
+      if (!await saveDir.exists()) {
+        await saveDir.create(recursive: true);
       }
-    } catch (e) {
-      setState(() {
-        _statusMessage = 'Error selecting download directory: $e';
-      });
-    }
-  }
 
-  Future<void> _loadStatuses() async {
-    if (_statusDir == null) {
-      _initializeStatusDirectory();
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-      _statusMessage = 'Loading statuses...';
-      _statuses = [];
-    });
-
-    try {
-      final files = await _statusDir!.listDocuments(
-        mimeTypes: ['image/*', 'video/*'],
-      );
-
-      setState(() {
-        _statuses = files;
-        _statusMessage = 'Found ${files.length} statuses';
-      });
-    } catch (e) {
-      setState(() {
-        _statusMessage = 'Error loading statuses: $e';
-      });
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _downloadStatus(DocumentFile status) async {
-    if (_downloadDir == null) {
-      setState(() {
-        _statusMessage = 'Please select download directory first';
-      });
-      await _selectDownloadDirectory();
-      if (_downloadDir == null) return;
-    }
-
-    setState(() {
-      _isLoading = true;
-      _statusMessage = 'Saving status...';
-    });
-
-    try {
-      // Copy file to downloads
-      final savedFile = await status.copyTo(
-        _downloadDir!.uri,
-        name:
-            'WA_Status_${DateTime.now().millisecondsSinceEpoch}.${status.name.split('.').last}',
-      );
-
-      if (savedFile != null) {
-        setState(() {
-          _statusMessage = 'Status saved successfully!';
-        });
-      } else {
-        setState(() {
-          _statusMessage = 'Failed to save status';
-        });
+      // Copy file to save directory
+      if (status is File) {
+        final String newPath = path.join(savePath, fileName);
+        await (status as File).copy(newPath);
+        Get.snackbar('Success', 'Status saved to: $savePath');
+        return true;
       }
+      return false;
     } catch (e) {
-      setState(() {
-        _statusMessage = 'Error saving status: $e';
-      });
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      Get.snackbar('Error', 'Failed to save status: $e');
+      return false;
     }
   }
+}
 
-  Future<DocumentThumbnail?> _getThumbnail(DocumentFile file) async {
-    try {
-      return await file.thumbnail(width: 300, height: 300, quality: 80);
-    } catch (e) {
-      print('Error getting thumbnail: $e');
-      return null;
-    }
-  }
+// lib/views/status_page.dart
+
+class StatusPage extends StatelessWidget {
+  final StatusController controller = Get.put(StatusController());
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('WhatsApp Status Saver'),
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: 'Images'),
-            Tab(text: 'Videos'),
-          ],
-        ),
+        title: Text('WhatsApp Status Saver'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.folder_open),
-            onPressed: _isLoading ? null : _selectStatusDirectory,
-            tooltip: 'Select Status Folder',
+            icon: Icon(Icons.folder),
+            onPressed: () => controller.pickSaveDirectory(),
           ),
           IconButton(
-            icon: const Icon(Icons.download_for_offline),
-            onPressed: _isLoading ? null : _selectDownloadDirectory,
-            tooltip: 'Select Download Folder',
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _isLoading ? null : _loadStatuses,
-            tooltip: 'Refresh',
+            icon: Icon(Icons.refresh),
+            onPressed: () => controller.loadStatusItems(),
           ),
         ],
       ),
       body: Column(
         children: [
-          if (_statusMessage.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Text(
-                _statusMessage,
-                style: Theme.of(context).textTheme.bodyMedium,
-                textAlign: TextAlign.center,
-              ),
-            ),
-          if (_isLoading)
-            const LinearProgressIndicator()
-          else if (_statusDir == null)
-            Center(
-              child: ElevatedButton.icon(
-                onPressed: _selectStatusDirectory,
-                icon: const Icon(Icons.folder_open),
-                label: const Text('Select Status Folder'),
-              ),
-            )
-          else
-            Expanded(
-              child: TabBarView(
-                controller: _tabController,
-                children: [
-                  // Images Tab
-                  _buildStatusGrid(
-                    _statuses.where((file) {
-                      try {
-                        return file.type.startsWith('image/');
-                      } catch (e) {
-                        print('Error checking file type: $e');
-                        return false;
-                      }
-                    }).toList(),
-                  ),
-                  // Videos Tab
-                  _buildStatusGrid(
-                    _statuses.where((file) {
-                      try {
-                        return file.type.startsWith('video/');
-                      } catch (e) {
-                        print('Error checking file type: $e');
-                        return false;
-                      }
-                    }).toList(),
-                  ),
-                ],
-              ),
-            ),
+          // Save path display
+          Obx(() => Padding(
+                padding: EdgeInsets.all(8),
+                child: Text(
+                  'Save Location: ${controller.currentSavePath.value}',
+                  style: TextStyle(fontSize: 12),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              )),
+          // Status items grid
+          Expanded(
+            child: Obx(() {
+              if (controller.isLoading.value) {
+                return Center(child: CircularProgressIndicator());
+              }
+
+              if (controller.statusItems.isEmpty) {
+                return Center(child: Text('No status items found'));
+              }
+
+              return GridView.builder(
+                padding: EdgeInsets.all(8),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
+                ),
+                itemCount: controller.statusItems.length,
+                itemBuilder: (context, index) {
+                  final item = controller.statusItems[index];
+                  final bool isVideo = item.path.endsWith('.mp4');
+
+                  return GestureDetector(
+                    onTap: () {
+                      // Implement status preview
+                    },
+                    child: Stack(
+                      children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            image: DecorationImage(
+                              fit: BoxFit.cover,
+                              image: isVideo
+                                  ? FileImage(File(item.path))
+                                  : FileImage(File(item.path)),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          right: 8,
+                          bottom: 8,
+                          child: IconButton(
+                            icon: Icon(Icons.download, color: Colors.white),
+                            onPressed: () => controller.saveStatus(item),
+                          ),
+                        ),
+                        if (isVideo)
+                          Positioned(
+                            left: 8,
+                            top: 8,
+                            child: Icon(Icons.play_circle, color: Colors.white),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            }),
+          ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildStatusGrid(List<DocumentFile> files) {
-    if (files.isEmpty) {
-      return const Center(
-        child: Text('No statuses found'),
-      );
-    }
+// lib/main.dart
 
-    return GridView.builder(
-      padding: const EdgeInsets.all(8),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
+void main() {
+  runApp(
+    GetMaterialApp(
+      title: 'WhatsApp Status Saver',
+      theme: ThemeData(
+        primarySwatch: Colors.green,
+        visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
-      itemCount: files.length,
-      itemBuilder: (context, index) {
-        final file = files[index];
-        return Card(
-          clipBehavior: Clip.antiAlias,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              FutureBuilder<DocumentThumbnail?>(
-                future: _getThumbnail(file),
-                builder: (context, snapshot) {
-                  if (snapshot.hasData && snapshot.data != null) {
-                    return Image.memory(
-                      snapshot.data!.bytes,
-                      fit: BoxFit.cover,
-                    );
-                  }
-                  return const Center(
-                    child: Icon(Icons.image, size: 48),
-                  );
-                },
-              ),
-              if (file.type?.startsWith('video/') ?? false)
-                const Positioned(
-                  right: 8,
-                  top: 8,
-                  child: Icon(
-                    Icons.play_circle_outline,
-                    color: Colors.white,
-                    size: 32,
-                  ),
-                ),
-              Positioned(
-                right: 8,
-                bottom: 8,
-                child: IconButton(
-                  icon: const Icon(Icons.download),
-                  color: Colors.white,
-                  onPressed: () => _downloadStatus(file),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
+      home: StatusPage(),
+    ),
+  );
 }
